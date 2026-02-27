@@ -2,8 +2,15 @@
 // test/sdkClient.test.ts — SDK config validation tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { fetchLoanTerms, fetchAllLoans, __resetSdkForTests, SdkClientError } from "../src/sdkClient.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import {
+  fetchLoanTerms,
+  fetchAllLoans,
+  __resetSdkForTests,
+  __setSdkForTests,
+  __setSdkModuleForTests,
+  SdkClientError,
+} from "../src/sdkClient.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -110,5 +117,115 @@ describe("sdkClient config validation", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(SdkClientError);
     }
+  });
+});
+
+describe("sdkClient SDK Result envelope handling", () => {
+  beforeEach(() => {
+    __resetSdkForTests();
+    setRequiredEnv();
+  });
+
+  afterEach(() => {
+    __resetSdkForTests();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("unwraps getLoansAll success envelope and returns real paging data", async () => {
+    __setSdkForTests({
+      getLoansAll: vi.fn().mockResolvedValue({
+        success: true,
+        value: {
+          loans: [{ id: "loan-1" }, { id: "loan-2" }],
+          page: 2,
+          maxRows: 5,
+          totalLoans: 42,
+        },
+      }),
+    });
+
+    const result = await fetchAllLoans({ page: 2, maxRows: 5 });
+
+    expect(result).toEqual({
+      source: "sdk",
+      loans: [{ id: "loan-1" }, { id: "loan-2" }],
+      page: 2,
+      maxRows: 5,
+      totalLoans: 42,
+    });
+  });
+
+  it("passes through exact SDK message from failed getLoansAll envelope", async () => {
+    __setSdkForTests({
+      getLoansAll: vi.fn().mockResolvedValue({
+        success: false,
+        error: { message: "Subgraph query failed: upstream timeout." },
+      }),
+    });
+
+    await expect(fetchAllLoans({ page: 0, maxRows: 10 })).rejects.toMatchObject({
+      code: "SDK_FETCH_FAILED",
+      message: "Subgraph query failed: upstream timeout.",
+    });
+  });
+
+  it("returns SDK_NO_LOAN_DATA when unwrapped loans array is empty", async () => {
+    __setSdkForTests({
+      getLoansAll: vi.fn().mockResolvedValue({
+        success: true,
+        value: {
+          loans: [],
+          page: 0,
+          maxRows: 10,
+          totalLoans: 0,
+        },
+      }),
+    });
+
+    await expect(fetchAllLoans({ page: 0, maxRows: 10 })).rejects.toMatchObject({
+      code: "SDK_NO_LOAN_DATA",
+      message: "SDK returned no loan data.",
+    });
+  });
+
+  it("fails init with SDK_INIT_FAILED and exact create() envelope message", async () => {
+    const MockDiamondHandsSDK = function MockDiamondHandsSDK() {};
+    (MockDiamondHandsSDK as any).create = vi.fn().mockResolvedValue({
+      success: false,
+      error: { message: "Invalid SDK configuration: serviceEndpoint missing." },
+    });
+
+    __setSdkModuleForTests({
+      DiamondHandsSDK: MockDiamondHandsSDK,
+    });
+
+    await expect(fetchAllLoans({ page: 0, maxRows: 10 })).rejects.toMatchObject({
+      code: "SDK_INIT_FAILED",
+      message: "Invalid SDK configuration: serviceEndpoint missing.",
+    });
+  });
+
+  it("unwraps getTermsWithFees success envelope for fee terms", async () => {
+    __setSdkForTests({
+      getTermsWithFees: vi.fn().mockResolvedValue({
+        success: true,
+        value: {
+          terms: [
+            { termMonths: 12, originationFeeBps: 300 },
+            { termMonths: 24, originationFeeBps: 350 },
+          ],
+        },
+      }),
+    });
+
+    const result = await fetchLoanTerms();
+
+    expect(result).toEqual({
+      source: "sdk",
+      terms: [
+        { termMonths: 12, originationFeeBps: 300 },
+        { termMonths: 24, originationFeeBps: 350 },
+      ],
+    });
   });
 });

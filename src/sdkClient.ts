@@ -56,6 +56,7 @@ export class SdkClientError extends Error {
 
 // We store the SDK instance so we only initialise once across all tool calls.
 let sdkInstance: any = null;
+let sdkModuleOverride: any = null;
 
 function requireEnv(name: keyof NodeJS.ProcessEnv): string {
   const value = process.env[name];
@@ -125,18 +126,101 @@ function getSdkEnv(): SdkEnv {
 }
 
 function extractErrorMessage(error: unknown, fallbackMessage: string): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof (error as { message: unknown }).message === "string"
-  ) {
-    const message = (error as { message: string }).message.trim();
+  const message = findMessageInUnknown(error);
+  if (message !== null) {
+    return message;
+  }
+  return fallbackMessage;
+}
+
+function findMessageInUnknown(value: unknown, depth: number = 0, seen: Set<object> = new Set()): string | null {
+  if (depth > 5) return null;
+  if (typeof value === "string") {
+    const message = value.trim();
+    if (message.length > 0) {
+      return message;
+    }
+    return null;
+  }
+  if (value instanceof Error) {
+    const message = value.message.trim();
     if (message.length > 0) {
       return message;
     }
   }
-  return fallbackMessage;
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  if (seen.has(value)) {
+    return null;
+  }
+  seen.add(value);
+
+  const record = value as Record<string, unknown>;
+  const directMessage = record["message"];
+  if (typeof directMessage === "string" && directMessage.trim().length > 0) {
+    return directMessage.trim();
+  }
+
+  for (const key of ["error", "cause", "originalError", "details"]) {
+    if (key in record) {
+      const nested = findMessageInUnknown(record[key], depth + 1, seen);
+      if (nested !== null) {
+        return nested;
+      }
+    }
+  }
+
+  return null;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isSdkResultEnvelope(value: unknown): value is {
+  success: boolean;
+  value?: unknown;
+  error?: unknown;
+} {
+  return isObjectRecord(value) && typeof value["success"] === "boolean";
+}
+
+function unwrapSdkResultOrThrow<T>(
+  raw: unknown,
+  code: LoanCostErrorCode,
+  fallbackMessage: string
+): T {
+  if (!isSdkResultEnvelope(raw)) {
+    return raw as T;
+  }
+  if (raw.success) {
+    return raw.value as T;
+  }
+  throw new SdkClientError(
+    code,
+    extractErrorMessage(raw.error, fallbackMessage)
+  );
+}
+
+function resolveDiamondHandsSdkClass(moduleExports: any): any {
+  if (typeof moduleExports?.DiamondHandsSDK === "function") {
+    return moduleExports.DiamondHandsSDK;
+  }
+  if (typeof moduleExports?.default?.DiamondHandsSDK === "function") {
+    return moduleExports.default.DiamondHandsSDK;
+  }
+  if (typeof moduleExports?.default === "function") {
+    return moduleExports.default;
+  }
+  return null;
+}
+
+function loadDiamondHandsSdkModule(): any {
+  if (sdkModuleOverride) {
+    return sdkModuleOverride;
+  }
+  return cjsRequire("@gvnrdao/dh-sdk");
 }
 
 function toSdkClientError(
@@ -174,6 +258,21 @@ function toPositiveInteger(value: unknown): number | null {
  */
 export function __resetSdkForTests(): void {
   sdkInstance = null;
+  sdkModuleOverride = null;
+}
+
+/**
+ * Test helper: inject a fake SDK instance and bypass SDK init.
+ */
+export function __setSdkForTests(sdk: any): void {
+  sdkInstance = sdk;
+}
+
+/**
+ * Test helper: override the loaded SDK module export object.
+ */
+export function __setSdkModuleForTests(moduleExports: any): void {
+  sdkModuleOverride = moduleExports;
 }
 
 /**
@@ -200,7 +299,8 @@ async function initSdk(): Promise<any> {
   }
 
   try {
-    const dhSdk = cjsRequire("@gvnrdao/dh-sdk");
+    const dhSdk = loadDiamondHandsSdkModule();
+    const DiamondHandsSDK = resolveDiamondHandsSdkClass(dhSdk);
 
     const config = {
       mode: "service" as const,
@@ -235,27 +335,57 @@ async function initSdk(): Promise<any> {
       validatorVersion: 1,
     };
 
-    if (typeof dhSdk.DiamondHandsSDK === "function") {
-      sdkInstance = new dhSdk.DiamondHandsSDK(config);
-    } else if (typeof dhSdk.createSDK === "function") {
-      sdkInstance = await dhSdk.createSDK(config);
-    } else if (typeof dhSdk.default === "function") {
-      sdkInstance = new dhSdk.default(config);
-    } else if (typeof dhSdk.init === "function") {
-      sdkInstance = await dhSdk.init(config);
-    } else {
+    if (typeof DiamondHandsSDK !== "function") {
       throw new SdkClientError(
         "SDK_INIT_FAILED",
         "Failed to initialize Diamond Hands SDK."
       );
     }
 
-    if (typeof sdkInstance.initialize === "function") {
-      await sdkInstance.initialize();
-    } else if (typeof sdkInstance.init === "function") {
-      await sdkInstance.init();
+    let verifiedSdkInstance: any;
+
+    if (typeof DiamondHandsSDK.create === "function") {
+      const created = await DiamondHandsSDK.create(config);
+      verifiedSdkInstance = unwrapSdkResultOrThrow<any>(
+        created,
+        "SDK_INIT_FAILED",
+        "Failed to initialize Diamond Hands SDK."
+      );
+    } else {
+      let fallbackInstance: any;
+      try {
+        fallbackInstance = new DiamondHandsSDK(config);
+      } catch (error) {
+        throw new SdkClientError(
+          "SDK_INIT_FAILED",
+          extractErrorMessage(error, "Failed to initialize Diamond Hands SDK.")
+        );
+      }
+
+      if (typeof fallbackInstance.initialize === "function") {
+        const initResult = await fallbackInstance.initialize();
+        if (isSdkResultEnvelope(initResult)) {
+          unwrapSdkResultOrThrow<void>(
+            initResult,
+            "SDK_INIT_FAILED",
+            "Failed to initialize Diamond Hands SDK."
+          );
+        }
+      } else if (typeof fallbackInstance.init === "function") {
+        const initResult = await fallbackInstance.init();
+        if (isSdkResultEnvelope(initResult)) {
+          unwrapSdkResultOrThrow<void>(
+            initResult,
+            "SDK_INIT_FAILED",
+            "Failed to initialize Diamond Hands SDK."
+          );
+        }
+      }
+
+      verifiedSdkInstance = fallbackInstance;
     }
 
+    sdkInstance = verifiedSdkInstance;
     console.error("[sdkClient] Diamond Hands SDK initialised successfully.");
     return sdkInstance;
   } catch (error) {
@@ -277,69 +407,23 @@ async function initSdk(): Promise<any> {
 export async function fetchLoanTermsViaSdk(): Promise<FetchResult> {
   try {
     const sdk = await initSdk();
-
-    let rawTerms: any[] | null = null;
-
-    if (typeof sdk.getLoans === "function") {
-      try {
-        const loans = await sdk.getLoans();
-        rawTerms = Array.isArray(loans) ? loans : null;
-      } catch {
-        // Try next known SDK access pattern.
-      }
+    if (typeof sdk.getTermsWithFees !== "function") {
+      throw new SdkClientError(
+        "SDK_FETCH_FAILED",
+        "Diamond Hands SDK does not support getTermsWithFees."
+      );
     }
 
-    if (!rawTerms && typeof sdk.getLoanTerms === "function") {
-      try {
-        rawTerms = await sdk.getLoanTerms();
-      } catch {
-        // Try next known SDK access pattern.
-      }
-    }
+    const rawResult = await sdk.getTermsWithFees();
+    const unwrapped = unwrapSdkResultOrThrow<unknown>(
+      rawResult,
+      "SDK_FETCH_FAILED",
+      "Failed to fetch loan terms from Diamond Hands SDK."
+    );
+    const payload = isObjectRecord(unwrapped) ? unwrapped : {};
+    const rawTerms = Array.isArray(payload["terms"]) ? payload["terms"] : [];
 
-    if (!rawTerms && typeof sdk.getLoanConfigs === "function") {
-      try {
-        rawTerms = await sdk.getLoanConfigs();
-      } catch {
-        // Try next known SDK access pattern.
-      }
-    }
-
-    if (!rawTerms && typeof sdk.query === "function") {
-      try {
-        const result = await sdk.query(`{ loans(first: 20) { id originationFeeBps termMonths months mintFeeBps } }`);
-        rawTerms = result?.loans ?? result?.data?.loans ?? null;
-      } catch {
-        // Try next known SDK access pattern.
-      }
-    }
-
-    if (!rawTerms && typeof sdk.getSubgraphClient === "function") {
-      try {
-        const subgraphClient = sdk.getSubgraphClient();
-        if (typeof subgraphClient.query === "function") {
-          const result = await subgraphClient.query(
-            `{ loans(first: 20) { id originationFeeBps termMonths months mintFeeBps } }`
-          );
-          rawTerms = result?.loans ?? result?.data?.loans ?? null;
-        }
-      } catch {
-        // Try next known SDK access pattern.
-      }
-    }
-
-    if (!rawTerms && typeof sdk.getContractManager === "function") {
-      try {
-        const cm = sdk.getContractManager();
-        if (typeof cm.getLoanTerms === "function") {
-          rawTerms = await cm.getLoanTerms();
-        }
-      } catch {
-        // No more patterns left.
-      }
-    }
-
-    if (!rawTerms || rawTerms.length === 0) {
+    if (rawTerms.length === 0) {
       throw new SdkClientError("SDK_NO_LOAN_DATA", "SDK returned no loan data.");
     }
 
@@ -399,9 +483,12 @@ export async function fetchAllLoansViaSdk(paging: GetAllLoansPaging): Promise<Ge
       maxRows: paging.maxRows,
     });
 
-    const resultObject = (typeof rawResult === "object" && rawResult !== null)
-      ? (rawResult as Record<string, unknown>)
-      : {};
+    const unwrapped = unwrapSdkResultOrThrow<unknown>(
+      rawResult,
+      "SDK_FETCH_FAILED",
+      "Failed to fetch loans from Diamond Hands SDK."
+    );
+    const resultObject = isObjectRecord(unwrapped) ? unwrapped : {};
 
     const loans = Array.isArray(resultObject["loans"]) ? resultObject["loans"] : [];
     const page = toNonNegativeInteger(resultObject["page"]) ?? paging.page;

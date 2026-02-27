@@ -4,6 +4,7 @@ MCP server for Cursor AI that returns Diamond Hands loan origination cost using 
 
 - **Uses the Diamond Hands SDK** to query real loan data from the subgraph
 - **SDK-only mode** — returns real data or a minimal structured failure payload
+- **SDK Result-aware integration** — MCP unwraps SDK `{ success, value/error }` responses
 - **Env vars via mcp.json** — all runtime config is required and passed securely
 
 ---
@@ -128,8 +129,8 @@ Failure (`status: "failed"`):
 {
   "status": "failed",
   "source": "sdk",
-  "errorCode": "SDK_CONFIG_MISSING_ENV",
-  "message": "Missing required environment variable: BITCOIN_PROVIDER_URL."
+  "errorCode": "SDK_FETCH_FAILED",
+  "message": "Failed to get terms with fees: execution reverted"
 }
 ```
 
@@ -173,8 +174,8 @@ Failure (`status: "failed"`):
 {
   "status": "failed",
   "source": "sdk",
-  "errorCode": "SDK_NO_LOAN_DATA",
-  "message": "SDK returned no loan data."
+  "errorCode": "SDK_FETCH_FAILED",
+  "message": "Failed to query loans"
 }
 ```
 
@@ -186,6 +187,7 @@ Failure (`status: "failed"`):
 User asks in Cursor chat
   → Cursor calls get_new_loan_cost or get_all_loans tool
     → sdkClient fetches live data from Diamond Hands SDK
+      → MCP unwraps SDK Result envelopes (`{ success, value/error }`)
     → feeService computes fee result (for get_new_loan_cost)
     → if SDK fails, tool returns minimal failed payload:
       { status: "failed", source: "sdk", errorCode, message }
