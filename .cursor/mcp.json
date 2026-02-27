@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "diamond-hands-mcp": {
+      "command": "node",
+      "args": ["/Users/davitkhachatryan/Desktop/Projects/diamond-hands-mcp/dist/index.js"],
+      "env": {
+        "SUBGRAPH_URL": "https://api.studio.thegraph.com/query/65258/diamond-hands/v0.6.23",
+        "GRAPH_API_KEY": "6c97a31c3b84ae376d00ca963e000721",
+        "ETH_RPC_URL": "https://sepolia.infura.io/v3/feb2b2aa68af4630a0795c2a97450e72",
+        "PRIVATE_KEY": "0xa545a4bca0c6dc16cf7e62a472457b2b41e75987533538ce6658dbd9ba45ab62",
+        "CHAIN_ID": "11155111",
+        "SERVICE_ENDPOINT": "https://diamond-hands-lit-ops-server-0d655e7f3988.herokuapp.com",
+        "BITCOIN_PROVIDER_URL": "https://dh-btc-faucet-jw-bb7756976029.herokuapp.com",
+        "BITCOIN_PROVIDER_NAME": "Diamond Hands",
+        "BITCOIN_PROVIDER_NETWORK": "regtest"
+      }
+    }
+  }
+}

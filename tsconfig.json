@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    // Target ES2022 so we can use modern JS features (top-level await, etc.)
+    // Node 22 supports this natively.
+    "target": "ES2022",
+
+    // Use the Node16 module system so TypeScript understands .js ESM imports
+    // and resolves them correctly when we write `import './foo.js'`.
+    "module": "Node16",
+    "moduleResolution": "Node16",
+
+    // Emit compiled JS into the dist/ folder — this is what Cursor will run.
+    "outDir": "./dist",
+
+    // rootDir tells tsc where source files live so it mirrors the
+    // src/ structure inside dist/ (e.g. src/tools/x.ts → dist/tools/x.js).
+    "rootDir": "./src",
+
+    // Strict mode catches a wide class of bugs at compile time:
+    // null checks, implicit any, strict function types, etc.
+    "strict": true,
+
+    // Skip type-checking .d.ts files from node_modules — speeds up builds.
+    "skipLibCheck": true,
+
+    // Emit source maps so stack traces point to .ts lines, not compiled .js.
+    "sourceMap": true,
+
+    // Emit .d.ts declaration files so the project can be used as a library.
+    "declaration": true,
+
+    // Allow default imports from CJS modules (e.g. `import fs from 'fs'`).
+    "esModuleInterop": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "test"]
+}
